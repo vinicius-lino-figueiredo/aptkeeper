@@ -4,6 +4,37 @@ require 'pathname'
 require 'set'
 require 'tempfile'
 
+class Package
+  attr_reader :name, :version
+
+  def initialize(name, version)
+    @name = name
+    @version = version
+  end
+
+  def <=>(other)
+    return nil unless other.is_a?(Package)
+
+    name <=> other.name
+  end
+
+  def to_s
+    name
+  end
+
+  def ==(other)
+    other.is_a?(Package) && name == other.name
+  end
+
+  def eql?(other)
+    other.is_a?(Package) && name == other.name
+  end
+
+  def hash
+    name.hash
+  end
+end
+
 # Declarative package management with apt!
 
 class AptKeeper
@@ -20,14 +51,23 @@ class AptKeeper
     .map { |l| l.sub(/#.*$/, '').strip }
     .flat_map { |l| l.split(/\s+/) }
     .reject(&:empty?)
+    .map { |l| Package.new(*l.include?('=') ? l.split('=', 2) : [l, nil]) }
     .to_set
   end
   
   def initialize
     CONFDIR.mkpath
 
-    @auto = IO.popen('apt-mark showauto').readlines.map(&:chomp).to_set
-    @manual = IO.popen('apt-mark showmanual').readlines.map(&:chomp).to_set
+    @auto = IO.popen("apt-mark showauto | xargs dpkg-query -W -f='${Package}=${Version}'\\\\n")
+              .readlines
+              .map(&:chomp)
+              .map { |l| Package.new(*l.split('=', 2)) }
+              .to_set
+    @manual = IO.popen("apt-mark showmanual | xargs dpkg-query -W -f='${Package}=${Version}'\\\\n")
+                .readlines
+                .map(&:chomp)
+                .map { |l| Package.new(*l.split('=', 2)) }
+                .to_set
     @keepers = CONFDIR.children
       .select { |p| p.file? && p.extname == '.keep' }
       .reduce(Set.new) { |ks, p| ks.merge(read_package_list(p)) }
@@ -49,7 +89,7 @@ class AptKeeper
 
   def simulate_autoremove(auto)
     states = Tempfile.new('states')
-    system('apt-mark', '-f', states.path, 'auto', *auto, out: :close)
+    system('apt-mark', '-f', states.path, 'auto', *auto.map(&:name), out: :close)
     removed = Set.new
     cmd = ['apt-get', '--simulate', '-o', "dir::state::extended_states=#{states.path}", 'autoremove']
     IO.popen(cmd).each do |line|
@@ -135,7 +175,7 @@ when 'diff'
   ak.print(ak.missing, "To install:") if ak.missing.any?
   ak.print(unneeded, "To remove:") if unneeded.any?
 when 'install'
-  rerun_root[ak.missing] { |ps| exec('apt', 'install', *ps) }
+  rerun_root[ak.missing.map {|p| p.to_s}] { |ps| exec('apt', 'install', *ps) }
 when 'remove'
   rerun_root[ak.unneeded] { exec('apt', 'autoremove') }
 when 'sync'
