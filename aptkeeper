@@ -155,7 +155,7 @@ rerun_root = ->(list, &block) do
     ak.write_root_keepers
     block[list.sort]
   else
-    exec('sudo', __FILE__, *orig_argv)
+    exec('sudo', '-E', __FILE__, *orig_argv)
   end
 end
 
